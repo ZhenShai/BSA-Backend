@@ -1,17 +1,16 @@
 {
-  "name": "bsa-backend",
-  "version": "1.0.0",
-  "description": "Secure backend server for the BSA - Biblical Study Assistant Android application",
+  "name": "biblical-study-assistant-backend",
+  "version": "1.0.1",
+  "private": true,
   "type": "module",
-  "main": "server.js",
+  "description": "Secure Responses API backend for the Biblical Study Assistant Android app.",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "start": "node server.js"
+    "start": "node src/server.mjs"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^5.1.0"
-  },
-  "engines": {
-    "node": ">=20.0.0"
+    "openai": "7.4.0"
   }
 }
