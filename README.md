@@ -23,6 +23,18 @@ Secure backend for the **eBiblical Study** Android application, using Groq as th
 | `ENABLE_WEB_SEARCH` | Optional; when `true`, sourced requests use Gemini grounding. |
 | `BSA_APP_TOKEN` | Existing application authentication secret; do not remove. |
 
+## Free-tier safeguards
+
+Groq's free GPT-OSS 120B quota includes 8,000 tokens per minute, which can be reached well before 1,000 daily requests on a long Bible study. This does not mean the daily request limit is exhausted.
+
+- `GROQ_MAX_PROMPT_CHARS` (default `20000`): A conservative preflight text-size safeguard. Very large multi-stage study inputs go directly to Gemini; nothing is truncated or deleted. Character count is only an approximation of token cost, not an exact tokenizer.
+- `GROQ_MAX_COMPLETION_TOKENS` (default `6000`): Caps **only Groq** output allowance; the Gemini settings remain unchanged. Incomplete Groq generations fall back to Gemini.
+- After a Groq `429`, the backend respects the `Retry-After` response header, with at least 60 seconds of cooldown, so repeated stages do not waste time making predictably rejected Groq calls.
+- Gemini is retried **once** after a transient `503` overload, with a short delay. API authentication errors and daily quota errors are never retried automatically.
+- The ordinary app rate limiter still defaults to `MAX_REQUESTS_PER_WINDOW=20` per client address every `RATE_WINDOW_MS=900000` (15 minutes); this is separate from Groq quotas.
+
+These protections work in memory on each Render instance. The best long-term option for many simultaneous users is a shared rate budget; the free plan does not include that automatically.
+
 For both providers, requests continue to pass through the same `POST /v1/study` endpoint. Response fields `result`, `responseId`, `sources`, and `usage` are unchanged. Additional response fields `provider` and `model` identify the service that answered.
 
 `GET /health` reports which providers are configured, without returning API keys.

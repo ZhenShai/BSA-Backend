@@ -1,7 +1,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { GoogleGenAI } from "@google/genai";
-import { generateGroq, generateWithFallback } from "./ai-providers.mjs";
+import { generateGroq, generateWithFallback, createGroqGuard, withGeminiAvailabilityRetry } from "./ai-providers.mjs";
 import { buildInput, buildInstructions } from "./prompts.mjs";
 import { validateStudyRequest, ValidationError } from "./validation.mjs";
 
@@ -22,6 +22,9 @@ const geminiTimeoutMs = integerEnv(
   integerEnv("OPENAI_TIMEOUT_MS", 180_000),
 );
 const groqTimeoutMs = integerEnv("GROQ_TIMEOUT_MS", 90_000);
+const groqMaxPromptChars = integerEnv("GROQ_MAX_PROMPT_CHARS", 20_000);
+const groqMaxCompletionTokens = integerEnv("GROQ_MAX_COMPLETION_TOKENS", 6_000);
+const groqGuard = createGroqGuard({ maxPromptChars: groqMaxPromptChars });
 const standardTokens = integerEnv("MAX_OUTPUT_TOKENS_STANDARD", 8_000);
 const finalTokens = integerEnv("MAX_OUTPUT_TOKENS_FINAL", 14_000);
 const rateBuckets = new Map();
@@ -100,31 +103,46 @@ const server = http.createServer(async (request, response) => {
 
     const maxOutputTokens =
       studyRequest.stage === "FINAL_RESULT" ? finalTokens : standardTokens;
+    const instructions = buildInstructions(studyRequest);
+    const input = buildInput(studyRequest);
+    const needsGrounding = studyRequest.includeSources && enableWebSearch;
+    const groqSkipReason = !needsGrounding && process.env.GROQ_API_KEY
+      ? groqGuard.reason(instructions.length + input.length)
+      : null;
+
+    if (groqSkipReason && process.env.GEMINI_API_KEY) {
+      console.info(JSON.stringify({
+        requestId,
+        event: "groq_skipped",
+        reason: groqSkipReason,
+        stage: studyRequest.stage,
+      }));
+    }
 
     const output = await generateWithFallback({
-      groqEnabled: Boolean(process.env.GROQ_API_KEY),
+      groqEnabled: Boolean(process.env.GROQ_API_KEY) && !(groqSkipReason && process.env.GEMINI_API_KEY),
       geminiEnabled: Boolean(process.env.GEMINI_API_KEY),
-      needsGrounding: studyRequest.includeSources && enableWebSearch,
+      needsGrounding,
 
       runGroq: () => generateGroq({
         apiKey: process.env.GROQ_API_KEY,
         model: groqModel,
-        instructions: buildInstructions(studyRequest),
-        input: buildInput(studyRequest),
-        maxTokens: maxOutputTokens,
+        instructions,
+        input,
+        maxTokens: Math.min(maxOutputTokens, groqMaxCompletionTokens),
         timeoutMs: groqTimeoutMs,
       }),
 
-      runGemini: async () => {
+      runGemini: () => withGeminiAvailabilityRetry(async () => {
         const tools =
           studyRequest.includeSources && enableWebSearch
             ? [{ googleSearch: {} }]
             : undefined;
         const apiResponse = await getGemini().models.generateContent({
           model,
-          contents: buildInput(studyRequest),
+          contents: input,
           config: {
-            systemInstruction: buildInstructions(studyRequest),
+            systemInstruction: instructions,
             maxOutputTokens,
             httpOptions: { timeout: geminiTimeoutMs },
             ...(tools ? { tools } : {}),
@@ -145,9 +163,10 @@ const server = http.createServer(async (request, response) => {
           provider: "google-gemini",
           model,
         };
-      },
+      }),
 
-      onFallback: ({ status }) => {
+      onFallback: ({ status, retryAfterMs }) => {
+        groqGuard.onGroqError({ status, retryAfterMs });
         console.warn(JSON.stringify({
           requestId,
           event: "provider_fallback",

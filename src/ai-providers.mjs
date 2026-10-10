@@ -28,6 +28,12 @@ export async function generateGroq({
     // Do not expose external provider errors or any API key to Android clients.
     const error = new Error(`Groq returned HTTP ${response.status}.`);
     error.status = response.status;
+    if (response.status === 429) {
+      const seconds = Number(response.headers?.get?.("retry-after"));
+      error.retryAfterMs = Number.isFinite(seconds) && seconds > 0
+        ? Math.min(seconds * 1000, 24 * 60 * 60 * 1000)
+        : null;
+    }
     throw error;
   }
 
@@ -72,7 +78,7 @@ export async function generateWithFallback({
       return await runGroq();
     } catch (error) {
       if (!geminiEnabled) throw error;
-      onFallback({ from: "groq", to: "google-gemini", status: error.status || null });
+      onFallback({ from: "groq", to: "google-gemini", status: error.status || null, retryAfterMs: error.retryAfterMs ?? null });
     }
   }
 
@@ -80,4 +86,60 @@ export async function generateWithFallback({
   const error = new Error("No AI provider is configured.");
   error.status = 503;
   throw error;
+}
+
+
+/**
+ * In-memory protection for Groq's short-term token rate limit.
+ * Does not modify quotas, prompts, or user study content.
+ */
+export function createGroqGuard({
+  maxPromptChars = 20_000,
+  minimumCooldownMs = 60_000,
+  now = Date.now,
+} = {}) {
+  let cooldownUntil = 0;
+
+  return {
+    reason(promptChars) {
+      // Large cumulative study stages should go directly to Gemini, not
+      // repeatedly send a known-oversized request to Groq.
+      if (promptChars > maxPromptChars) return "large_study_context";
+      if (now() < cooldownUntil) return "rate_limit_cooldown";
+      return null;
+    },
+    onGroqError({ status, retryAfterMs }) {
+      if (status === 429) {
+        const requestedWait = Number.isFinite(retryAfterMs) && retryAfterMs > 0
+          ? Math.min(retryAfterMs, 24 * 60 * 60 * 1000)
+          : 0;
+        cooldownUntil = Math.max(
+          cooldownUntil,
+          now() + Math.max(minimumCooldownMs, requestedWait),
+        );
+      }
+    },
+    remainingCooldownMs() {
+      return Math.max(0, cooldownUntil - now());
+    },
+  };
+}
+
+/**
+ * A temporary overloaded Gemini service can recover after a short pause.
+ * Only retry server-side 503 (not quota 429 or invalid credentials).
+ */
+export async function withGeminiAvailabilityRetry(
+  task,
+  { sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    delayMs = 1250 } = {},
+) {
+  try {
+    return await task();
+  } catch (error) {
+    const status = Number(error?.status || error?.code || 0);
+    if (status !== 503) throw error;
+    await sleep(delayMs);
+    return task();
+  }
 }
