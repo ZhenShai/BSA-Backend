@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateGroq, generateWithFallback } from "../src/ai-providers.mjs";
+import { generateGroq, generateWithFallback, createGroqGuard, withGeminiAvailabilityRetry } from "../src/ai-providers.mjs";
 
 const groqResult = { provider: "groq", result: "Narrative result" };
 const geminiResult = { provider: "google-gemini", result: "Parsing result" };
@@ -83,4 +83,72 @@ test("Incomplete Groq output is rejected for Gemini fallback", async () => {
       }),
     }),
   }), /incomplete/);
+});
+
+test("Groq guard skips large cumulative Bible study prompts without discarding data", () => {
+  const guard = createGroqGuard({ maxPromptChars: 20000 });
+  assert.equal(guard.reason(16000), null);
+  assert.equal(guard.reason(25000), "large_study_context");
+});
+
+test("Groq rate-limit cooldown respects the longer Retry-After", () => {
+  let current = 1000;
+  const guard = createGroqGuard({ now: () => current, minimumCooldownMs: 60000 });
+  guard.onGroqError({ status: 429, retryAfterMs: 90000 });
+  assert.equal(guard.reason(5000), "rate_limit_cooldown");
+  current += 60001;
+  assert.equal(guard.reason(5000), "rate_limit_cooldown");
+  current += 30000;
+  assert.equal(guard.reason(5000), null);
+});
+
+test("Groq 413 is not treated like the temporary 429 cooldown", () => {
+  const guard = createGroqGuard({ maxPromptChars: 20000 });
+  guard.onGroqError({ status: 413 });
+  assert.equal(guard.reason(5000), null);
+});
+
+test("Groq includes the 429 Retry-After value for throttling", async () => {
+  await assert.rejects(generateGroq({
+    apiKey: "mock", model: "openai/gpt-oss-120b",
+    instructions: "Be accurate", input: "Genesis 1:1", maxTokens: 1000,
+    fetchImpl: async () => ({
+      ok: false, status: 429,
+      headers: { get: () => "33" },
+    }),
+  }), (error) => {
+    assert.equal(error.status, 429);
+    assert.equal(error.retryAfterMs, 33000);
+    return true;
+  });
+});
+
+test("Gemini retry recovers from transient 503 once", async () => {
+  let attempts = 0;
+  let pause = 0;
+  const result = await withGeminiAvailabilityRetry(async () => {
+    attempts++;
+    if (attempts === 1) {
+      const error = new Error("temporarily overloaded");
+      error.status = 503;
+      throw error;
+    }
+    return geminiResult;
+  }, { sleep: async (ms) => { pause = ms; } });
+  assert.equal(result, geminiResult);
+  assert.equal(attempts, 2);
+  assert.equal(pause, 1250);
+});
+
+test("Gemini does not retry invalid API keys or quota errors", async () => {
+  for (const status of [401, 403, 429]) {
+    let attempts = 0;
+    await assert.rejects(withGeminiAvailabilityRetry(async () => {
+      attempts++;
+      const error = new Error("blocked");
+      error.status = status;
+      throw error;
+    }, { sleep: async () => { throw new Error("unexpected retry"); } }), /blocked/);
+    assert.equal(attempts, 1);
+  }
 });
