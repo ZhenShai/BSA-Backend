@@ -78,7 +78,7 @@ export async function generateWithFallback({
       return await runGroq();
     } catch (error) {
       if (!geminiEnabled) throw error;
-      onFallback({ from: "groq", to: "google-gemini", status: error.status || null });
+      onFallback({ from: "groq", to: "google-gemini", status: error.status || null, retryAfterMs: error.retryAfterMs ?? null });
     }
   }
 
