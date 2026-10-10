@@ -1,11 +1,13 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { GoogleGenAI } from "@google/genai";
+import { generateGroq, generateWithFallback } from "./ai-providers.mjs";
 import { buildInput, buildInstructions } from "./prompts.mjs";
 import { validateStudyRequest, ValidationError } from "./validation.mjs";
 
 const port = integerEnv("PORT", 8787);
 const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 const appToken = process.env.BSA_APP_TOKEN || "";
 const enableWebSearch = process.env.ENABLE_WEB_SEARCH === "true";
 const trustProxy = process.env.TRUST_PROXY === "true";
@@ -19,6 +21,7 @@ const geminiTimeoutMs = integerEnv(
   "GEMINI_TIMEOUT_MS",
   integerEnv("OPENAI_TIMEOUT_MS", 180_000),
 );
+const groqTimeoutMs = integerEnv("GROQ_TIMEOUT_MS", 90_000);
 const standardTokens = integerEnv("MAX_OUTPUT_TOKENS_STANDARD", 8_000);
 const finalTokens = integerEnv("MAX_OUTPUT_TOKENS_FINAL", 14_000);
 const rateBuckets = new Map();
@@ -56,9 +59,13 @@ const server = http.createServer(async (request, response) => {
     sendJson(response, 200, {
       status: "ok",
       service: "biblical-study-assistant-backend",
-      provider: "google-gemini",
-      model,
-      apiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+      provider: process.env.GROQ_API_KEY ? "groq" : "google-gemini",
+      model: process.env.GROQ_API_KEY ? groqModel : model,
+      apiKeyConfigured: Boolean(process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY),
+      providers: {
+        groq: { configured: Boolean(process.env.GROQ_API_KEY), model: groqModel },
+        gemini: { configured: Boolean(process.env.GEMINI_API_KEY), model },
+      },
     });
     return;
   }
@@ -91,51 +98,79 @@ const server = http.createServer(async (request, response) => {
     const rawBody = await readJsonBody(request, 1_500_000);
     const studyRequest = validateStudyRequest(rawBody);
 
-    const tools =
-      studyRequest.includeSources && enableWebSearch
-        ? [{ googleSearch: {} }]
-        : undefined;
+    const maxOutputTokens =
+      studyRequest.stage === "FINAL_RESULT" ? finalTokens : standardTokens;
 
-    const apiResponse = await getGemini().models.generateContent({
-      model,
-      contents: buildInput(studyRequest),
-      config: {
-        systemInstruction: buildInstructions(studyRequest),
-        maxOutputTokens:
-          studyRequest.stage === "FINAL_RESULT" ? finalTokens : standardTokens,
-        httpOptions: {
-          timeout: geminiTimeoutMs,
-        },
-        ...(tools ? { tools } : {}),
+    const output = await generateWithFallback({
+      groqEnabled: Boolean(process.env.GROQ_API_KEY),
+      geminiEnabled: Boolean(process.env.GEMINI_API_KEY),
+      needsGrounding: studyRequest.includeSources && enableWebSearch,
+
+      runGroq: () => generateGroq({
+        apiKey: process.env.GROQ_API_KEY,
+        model: groqModel,
+        instructions: buildInstructions(studyRequest),
+        input: buildInput(studyRequest),
+        maxTokens: maxOutputTokens,
+        timeoutMs: groqTimeoutMs,
+      }),
+
+      runGemini: async () => {
+        const tools =
+          studyRequest.includeSources && enableWebSearch
+            ? [{ googleSearch: {} }]
+            : undefined;
+        const apiResponse = await getGemini().models.generateContent({
+          model,
+          contents: buildInput(studyRequest),
+          config: {
+            systemInstruction: buildInstructions(studyRequest),
+            maxOutputTokens,
+            httpOptions: { timeout: geminiTimeoutMs },
+            ...(tools ? { tools } : {}),
+          },
+        });
+
+        const result = apiResponse.text?.trim();
+        if (!result) throw new Error("The Gemini model returned an empty result.");
+
+        return {
+          result,
+          responseId: apiResponse.responseId || "",
+          sources: extractSources(apiResponse),
+          usage: {
+            inputTokens: apiResponse.usageMetadata?.promptTokenCount ?? null,
+            outputTokens: apiResponse.usageMetadata?.candidatesTokenCount ?? null,
+          },
+          provider: "google-gemini",
+          model,
+        };
+      },
+
+      onFallback: ({ status }) => {
+        console.warn(JSON.stringify({
+          requestId,
+          event: "provider_fallback",
+          from: "groq",
+          to: "google-gemini",
+          upstreamStatus: status,
+        }));
       },
     });
 
-    const result = apiResponse.text?.trim();
-    if (!result) throw new Error("The model returned an empty result.");
-
-    const sources = extractSources(apiResponse);
-
-    sendJson(response, 200, {
-      result,
-      responseId: apiResponse.responseId || "",
-      sources,
-      usage: {
-        inputTokens: apiResponse.usageMetadata?.promptTokenCount ?? null,
-        outputTokens: apiResponse.usageMetadata?.candidatesTokenCount ?? null,
-      },
-    });
+    sendJson(response, 200, output);
 
     console.info(JSON.stringify({
       requestId,
       status: 200,
-      provider: "google-gemini",
-      model,
+      provider: output.provider,
+      model: output.model,
       stage: studyRequest.stage,
       operation: studyRequest.operation,
       durationMs: Date.now() - startedAt,
-      responseId: apiResponse.responseId || null,
-      inputTokens: apiResponse.usageMetadata?.promptTokenCount ?? null,
-      outputTokens: apiResponse.usageMetadata?.candidatesTokenCount ?? null,
+      responseId: output.responseId || null,
+      inputTokens: output.usage.inputTokens,
+      outputTokens: output.usage.outputTokens,
     }));
   } catch (error) {
     const mapped = mapError(error);
@@ -289,11 +324,15 @@ function mapError(error) {
 
   const status = Number(error?.status || error?.code || 0);
 
+  if (status === 503) {
+    return { status: 503, message: "No suitable AI service is available. Please try again later." };
+  }
+
   if (status === 429) {
     return {
       status: 429,
       message:
-        "The AI service is busy or the Gemini usage limit was reached. Please wait and retry.",
+        "Both available AI services may be busy or over their limits. Please wait and retry.",
     };
   }
 
@@ -301,7 +340,7 @@ function mapError(error) {
     return {
       status: 503,
       message:
-        "The secure AI server cannot authenticate with Gemini. Check the Gemini API key in Render.",
+        "An AI service could not authenticate. Check the configured API keys in Render.",
     };
   }
 
@@ -325,10 +364,15 @@ function mapError(error) {
 }
 
 function safeErrorMessage(error) {
-  const message = String(error?.message || "");
-  return message
-    .replaceAll(process.env.GEMINI_API_KEY || "__NO_KEY__", "[REDACTED]")
-    .slice(0, 500);
+  let message = String(error?.message || "");
+  for (const secret of [
+    process.env.GEMINI_API_KEY,
+    process.env.GROQ_API_KEY,
+    process.env.OPENAI_API_KEY,
+  ]) {
+    if (secret) message = message.replaceAll(secret, "[REDACTED]");
+  }
+  return message.slice(0, 500);
 }
 
 function sendJson(response, status, payload) {

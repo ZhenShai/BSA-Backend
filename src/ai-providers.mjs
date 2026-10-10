@@ -1,0 +1,83 @@
+/** Groq chat completions adapter. Returns the same response shape as the Gemini adapter. */
+export async function generateGroq({
+  apiKey, model, instructions, input, maxTokens, timeoutMs = 90_000,
+  fetchImpl = fetch,
+}) {
+  if (!apiKey) throw new Error("Groq is not configured.");
+
+  const response = await fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: instructions },
+        { role: "user", content: input },
+      ],
+      reasoning_effort: "medium",
+      max_completion_tokens: maxTokens,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!response.ok) {
+    // Do not expose external provider errors or any API key to Android clients.
+    const error = new Error(`Groq returned HTTP ${response.status}.`);
+    error.status = response.status;
+    throw error;
+  }
+
+  const body = await response.json();
+  const choice = body.choices?.[0];
+  const result = choice?.message?.content?.trim();
+  if (!result || choice?.finish_reason === "length") {
+    throw new Error("Groq produced an empty or incomplete answer.");
+  }
+
+  return {
+    result,
+    responseId: body.id || "",
+    sources: [],
+    usage: {
+      inputTokens: body.usage?.prompt_tokens ?? null,
+      outputTokens: body.usage?.completion_tokens ?? null,
+    },
+    provider: "groq",
+    model,
+  };
+}
+
+/**
+ * Run Groq first when the caller does not require Google Search grounding.
+ * Any Groq failure (including rate limits and timeouts) falls back to Gemini.
+ * If web-search grounding is requested and enabled, go straight to Gemini.
+ */
+export async function generateWithFallback({
+  groqEnabled, geminiEnabled, needsGrounding = false,
+  runGroq, runGemini, onFallback = () => {},
+}) {
+  if (needsGrounding) {
+    if (geminiEnabled) return runGemini();
+    const error = new Error("Gemini is required for sourced research but is not configured.");
+    error.status = 503;
+    throw error;
+  }
+
+  if (groqEnabled) {
+    try {
+      return await runGroq();
+    } catch (error) {
+      if (!geminiEnabled) throw error;
+      onFallback({ from: "groq", to: "google-gemini", status: error.status || null });
+    }
+  }
+
+  if (geminiEnabled) return runGemini();
+  const error = new Error("No AI provider is configured.");
+  error.status = 503;
+  throw error;
+}
