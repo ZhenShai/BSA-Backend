@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildInstructions } from "../src/prompts.mjs";
+import { buildInstructions, buildInput } from "../src/prompts.mjs";
 import { validateStudyRequest, ValidationError } from "../src/validation.mjs";
 
 function validBody() {
@@ -119,4 +119,24 @@ test("Final Result needs both workflow conditions, with Findings only sufficient
 test("long Parsing and Rhetorical findings are preserved", () => {
   const body = { ...validBody(), stage: "FINDINGS", context: { biblicalParsing: "P".repeat(5000), rhetoricalAnalysis: "R".repeat(5000) } };
   assert.equal(validateStudyRequest(body).context.biblicalParsing.length, 5000);
+});
+
+for (let mask = 1; mask < 8; mask++) {
+  test(`Findings prompt contains only selected method headings for subset ${mask}`, () => {
+    const context = Object.fromEntries(fields.filter((_, i) => mask & (1 << i)).map((f) => [f, `${f} completed`]));
+    const request = validateStudyRequest({ ...validBody(), stage: "FINDINGS", context });
+    const instructions = buildInstructions(request);
+    const headings = ["C. KEY NARRATIVE FINDINGS", "D. KEY GRAMMATICAL AND PARSING FINDINGS", "E. KEY RHETORICAL FINDINGS"];
+    headings.forEach((heading, index) => assert.equal(instructions.includes(heading), Boolean(mask & (1 << index))));
+    assert.match(instructions, /STUDY METHODS USED:/);
+    assert.doesNotMatch(instructions, /\{\{METHOD/);
+  });
+}
+test("Final input excludes upstream analyses while retaining completed Findings", () => {
+  const request = validateStudyRequest({ ...validBody(), stage: "FINAL_RESULT", context: {
+    narrativeStudy: "UNUSED_NARRATIVE", biblicalParsing: "UNUSED_PARSING", rhetoricalAnalysis: "UNUSED_RHETORIC", biblicalStudyFindings: "COMPLETED_FINDINGS",
+  } });
+  const input = buildInput(request);
+  assert.match(input, /COMPLETED_FINDINGS/);
+  assert.doesNotMatch(input, /UNUSED_/);
 });

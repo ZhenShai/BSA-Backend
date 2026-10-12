@@ -86,14 +86,15 @@ VIII. RHETORICAL ANALYSIS RESULT: Rhetorical Unit; Exigence; Audience; Constrain
   FINDINGS: `
 SPECIALIZED PROFILE: BIBLICAL STUDY FINDINGS
 This is the main output of the application: a careful synthesis of ONLY the completed, selected study methods supplied below. A single method is valid. Identify reinforcement, tension, uncertainty, and the findings that most control interpretation.
-Name the methods actually used. Omit method-specific sections when that method was not supplied. Never claim an unused method was completed or invent grammatical, narrative, rhetorical or historical findings to fill a gap. Distinguish the original meaning from present application. Do not generate a sermon here. When updating an older synthesis, remove claims supported only by methods that are no longer selected.
+Begin with the exact STUDY METHODS USED line provided below. Use only the method-specific headings in the tailored structure below. Never claim an unused method was completed or invent grammatical, narrative, rhetorical or historical findings to fill a gap. Distinguish the original meaning from present application. Do not generate a sermon here. When updating an older synthesis, remove claims supported only by methods that are no longer selected.
 
-Use this structure:
+Do not add historical dates, audience identifications, original-language forms, grammatical details, or etymologies beyond the supplied study evidence. Say what remains uncertain. Biblical cross-references must actually support the claim and use the correct verse.
+
+{{METHODS_USED}}
+Use this tailored structure:
 A. PASSAGE OVERVIEW
-B. HISTORICAL AND LITERARY CONTEXT
-C. KEY NARRATIVE FINDINGS
-D. KEY GRAMMATICAL AND PARSING FINDINGS
-E. KEY RHETORICAL FINDINGS
+B. HISTORICAL AND LITERARY CONTEXT (only what the passage or supplied study establishes)
+{{METHOD_SECTIONS}}
 F. AUTHOR'S PURPOSE
 G. CENTRAL PROBLEM OR QUESTION
 H. EXEGETICAL IDEA: one sentence describing meaning in the original literary/historical setting
@@ -160,7 +161,16 @@ Write only a concise pastoral closing prayer arising from the established Centra
 };
 
 export function buildInstructions(request) {
-  const profile = PROFILES[request.stage];
+  let profile = PROFILES[request.stage];
+  if (request.stage === "FINDINGS") {
+    const supplied = [
+      ["narrativeStudy", "Narrative Study", "C. KEY NARRATIVE FINDINGS"],
+      ["biblicalParsing", "Biblical Parsing", "D. KEY GRAMMATICAL AND PARSING FINDINGS"],
+      ["rhetoricalAnalysis", "Rhetorical Analysis", "E. KEY RHETORICAL FINDINGS"],
+    ].filter(([field]) => request.context[field]);
+    profile = profile.replace("{{METHODS_USED}}", `STUDY METHODS USED: ${supplied.map(([, name]) => name).join(", ")}`)
+      .replace("{{METHOD_SECTIONS}}", supplied.map(([, , heading]) => heading).join("\n"));
+  }
   if (!profile) throw new Error("Unknown study profile.");
   const languageRule = `Selected language: ${request.project.language || "English"}. Selected depth: ${request.project.studyDepth || "Pastoral"}. Audience: ${request.project.audience || "General Congregation"}. Adapt communication without changing biblical meaning.`;
   return [
