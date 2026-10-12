@@ -65,31 +65,7 @@ const LONG_TEXT_FIELDS = new Set([
   "currentStageNotes",
 ]);
 
-const GENERATION_REQUIREMENTS = {
-  NARRATIVE: [],
-
-  PARSING: [
-    "narrativeStudy",
-  ],
-
-  RHETORICAL: [
-    "narrativeStudy",
-    "biblicalParsing",
-  ],
-
-  FINDINGS: [
-    "narrativeStudy",
-    "biblicalParsing",
-    "rhetoricalAnalysis",
-  ],
-
-  FINAL_RESULT: [
-    "narrativeStudy",
-    "biblicalParsing",
-    "rhetoricalAnalysis",
-    "biblicalStudyFindings",
-  ],
-};
+const SOURCE_FIELDS = ["narrativeStudy", "biblicalParsing", "rhetoricalAnalysis"];
 
 export function validateStudyRequest(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -187,16 +163,20 @@ export function validateStudyRequest(raw) {
     );
   }
 
-  if (operation === "generate") {
-    const missing =
-      GENERATION_REQUIREMENTS[stage].filter(
-        (field) => !context[field],
-      );
-
-    if (missing.length) {
-      throw new ValidationError(
-        "Complete the preceding study stages before generating this stage.",
-      );
+  // The first three methods are independent. All Findings operations need real sources.
+  if (stage === "FINDINGS" && !SOURCE_FIELDS.some((field) => context[field])) {
+    throw new ValidationError("Complete and select at least one study method before generating Biblical Study Findings.");
+  }
+  if (stage === "FINAL_RESULT" && !context.biblicalStudyFindings) {
+    throw new ValidationError("Complete Biblical Study Findings before preparing a Final Study Result.");
+  }
+  // Older clients have no workflow envelope. New clients must supply both Step 5 conditions.
+  if (raw.workflow !== undefined) {
+    if (!raw.workflow || typeof raw.workflow !== "object" || Array.isArray(raw.workflow) || raw.workflow.version !== 2) {
+      throw new ValidationError("Invalid study workflow information.");
+    }
+    if (stage === "FINAL_RESULT" && (raw.workflow.step5Enabled !== true || raw.workflow.findingsCurrent !== true)) {
+      throw new ValidationError("Enable Final Study Result and update Biblical Study Findings first.");
     }
   }
 

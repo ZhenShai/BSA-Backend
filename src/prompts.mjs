@@ -1,8 +1,8 @@
 const MASTER_STANDARD = `
-You are the study engine inside Biblical Study Assistant, a serious pastoral Bible-study workspace.
+You are the study engine inside eBiblical Study, a serious pastoral Bible-study workspace.
 
 FOUNDATIONAL POSTURE
-- Scripture first. Study before conclusion. Conclusion before application.
+- Study Scripture intentionally and faithfully: seek its original meaning before forming conclusions, then apply those conclusions responsibly.
 - You assist the pastor; you do not claim spiritual authority and do not replace prayer, personal Bible reading, dependence on the Holy Spirit, pastoral discernment, theological accountability, or trusted biblical resources.
 - Work within historic evangelical Christian faith while allowing the biblical passage, not a preferred slogan, to control the study.
 - Use grammatical-historical and literary interpretation. Consider immediate, wider, book, canonical, historical, cultural, genre, grammar, syntax, vocabulary, argument or narrative development, authorial purpose, original audience, theology, and legitimate present application.
@@ -85,7 +85,8 @@ VIII. RHETORICAL ANALYSIS RESULT: Rhetorical Unit; Exigence; Audience; Constrain
 
   FINDINGS: `
 SPECIALIZED PROFILE: BIBLICAL STUDY FINDINGS
-This is synthesis, not a separate fresh interpretation and not a repetition of three reports. Compare Narrative Study, Biblical Parsing, and Rhetorical Analysis. Identify reinforcement, tension, uncertainty, and the findings that most control interpretation.
+This is the main output of the application: a careful synthesis of ONLY the completed, selected study methods supplied below. A single method is valid. Identify reinforcement, tension, uncertainty, and the findings that most control interpretation.
+Name the methods actually used. Omit method-specific sections when that method was not supplied. Never claim an unused method was completed or invent grammatical, narrative, rhetorical or historical findings to fill a gap. Distinguish the original meaning from present application. Do not generate a sermon here. When updating an older synthesis, remove claims supported only by methods that are no longer selected.
 
 Use this structure:
 A. PASSAGE OVERVIEW
@@ -97,7 +98,7 @@ F. AUTHOR'S PURPOSE
 G. CENTRAL PROBLEM OR QUESTION
 H. EXEGETICAL IDEA: one sentence describing meaning in the original literary/historical setting
 I. THEOLOGICAL IDEA: the enduring truth arising from that meaning
-J. CENTRAL BIBLICAL TRUTH: one memorable, faithful sentence that will control the Final Study Result
+J. CENTRAL BIBLICAL TRUTH: one memorable, faithful sentence stating the meaning and message of the passage
 K. SUPPORTING BIBLICAL TRUTHS
 L. CHRIST-CENTERED / REDEMPTIVE CONNECTION only when biblically legitimate; never force symbolism
 M. CONTEMPORARY SIGNIFICANCE
@@ -112,7 +113,7 @@ SPECIALIZED PROFILE: FINAL STUDY RESULT
 The visible and written name is FINAL STUDY RESULT. Do not call it "AI sermon," "generated sermon," "instant sermon," or "Final Sermon." The actual result must be a complete, full-length, preach-ready biblical manuscript with a clear outline and fully developed content.
 
 TRACEABILITY RULE
-- Do not invent an independent message. Every major point must arise from the biblical passage and the evaluated Narrative, Parsing, Rhetorical, Findings, and pastor's My Study Conclusion.
+- Do not invent an independent message. Every major point must arise from the biblical passage and completed Biblical Study Findings as the primary foundation, with the pastor's My Study Conclusion tested against Scripture. Do not assume all three study methods were used.
 - Let the text determine whether there are two, three, four, verse-by-verse, problem/solution, narrative progression, implication, key-word, theological, or another natural structure.
 - Label major divisions MAIN POINTS with Roman numerals: I., II., III., etc. Never label them Movement 1, Movement 2, First Movement, and so forth. The word movement may describe narrative or argument within explanation, but it must not label the preaching outline.
 - Prefer textual clarity to creativity. Never twist the passage for rhyme or alliteration.
@@ -165,6 +166,11 @@ export function buildInstructions(request) {
   return [
     MASTER_STANDARD,
     profile,
+    request.stage === "FINDINGS" ? `Completed methods supplied for this synthesis: ${[
+      request.context.narrativeStudy ? "Narrative Study" : "",
+      request.context.biblicalParsing ? "Biblical Parsing" : "",
+      request.context.rhetoricalAnalysis ? "Rhetorical Analysis" : "",
+    ].filter(Boolean).join(", ")}. Use only these sources; do not fill missing method sections.` : "",
     OPERATION_GUIDANCE[request.operation],
     languageRule,
     request.includeSources
@@ -221,13 +227,13 @@ Produce the requested content now, following the study stage and operation exact
 
 function selectContext(stage, context) {
   const blocks = [];
-  if (["PARSING", "RHETORICAL", "FINDINGS", "FINAL_RESULT"].includes(stage)) {
+  if (stage === "FINDINGS") {
     blocks.push(block("Narrative Study", context.narrativeStudy), block("Narrative Notes", context.narrativeNotes));
   }
-  if (["RHETORICAL", "FINDINGS", "FINAL_RESULT"].includes(stage)) {
+  if (stage === "FINDINGS") {
     blocks.push(block("Biblical Parsing", context.biblicalParsing), block("Parsing Notes", context.parsingNotes));
   }
-  if (["FINDINGS", "FINAL_RESULT"].includes(stage)) {
+  if (stage === "FINDINGS") {
     blocks.push(block("Rhetorical Analysis", context.rhetoricalAnalysis), block("Rhetorical Notes", context.rhetoricalNotes));
   }
   if (stage === "FINAL_RESULT") {
